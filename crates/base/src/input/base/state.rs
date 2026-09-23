@@ -9152,17 +9152,6 @@ impl<M: crate::input::MultiLineMode> InputBaseState<M> {
         self.display_map.set_wrapping_indent(wrapping_indent, cx);
         cx.notify();
     }
-}
-
-/// Methods that only ordinary multi-line text offers.
-impl InputBaseState<crate::input::TextareaMode> {
-    /// Create a multi-line text state.
-    ///
-    /// Being multi-line is carried by the mode, not by the layout, so the
-    /// default plain-text layout needs no adjustment here.
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        Self::new_in_mode(window, cx)
-    }
 
     pub fn set_auto_grow(&mut self, min_rows: usize, max_rows: usize, cx: &mut Context<Self>) {
         self.mode = LayoutMode::auto_grow(min_rows, max_rows.max(min_rows));
@@ -9212,6 +9201,17 @@ impl InputBaseState<crate::input::TextareaMode> {
     pub fn auto_grow(mut self, min_rows: usize, max_rows: usize) -> Self {
         self.mode = LayoutMode::auto_grow(min_rows, max_rows);
         self
+    }
+}
+
+/// Methods that only ordinary multi-line text offers.
+impl InputBaseState<crate::input::TextareaMode> {
+    /// Create a multi-line text state.
+    ///
+    /// Being multi-line is carried by the mode, not by the layout, so the
+    /// default plain-text layout needs no adjustment here.
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        Self::new_in_mode(window, cx)
     }
 }
 
