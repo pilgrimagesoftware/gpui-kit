@@ -127,6 +127,16 @@ impl LayoutMode {
         }
     }
 
+    /// Whether this is the source-code editor layout.
+    ///
+    /// Distinct from `InputBaseState::is_code_editor`, which answers from the
+    /// mode *marker* and so stays true for an `EditorState` in any layout.
+    /// Behaviour that belongs to code editing is keyed here, so an editor
+    /// laid out as plain text or auto-grow does not grow it.
+    pub(super) fn is_code_editor(&self) -> bool {
+        matches!(self, Self::CodeEditor { .. })
+    }
+
     pub(super) fn is_auto_close(&self) -> bool {
         matches!(
             self,
