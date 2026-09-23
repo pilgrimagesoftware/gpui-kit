@@ -1934,7 +1934,7 @@ impl<M: InputModeKind> InputBaseState<M> {
                 let selections: Vec<CursorSelection> = self.selections.iter().copied().collect();
                 let mut edits: Vec<(Range<usize>, String)> = Vec::with_capacity(selections.len());
                 for sel in &selections {
-                    let indent = if self.is_code_editor() {
+                    let indent = if self.mode.is_code_editor() {
                         self.indent_of_next_line_at(sel.cursor_offset())
                     } else {
                         String::new()
@@ -2003,7 +2003,7 @@ impl<M: InputModeKind> InputBaseState<M> {
                 }
                 if !split {
                     // Get current line indent
-                    let indent = if self.is_code_editor() {
+                    let indent = if self.mode.is_code_editor() {
                         self.indent_of_next_line()
                     } else {
                         "".to_string()
