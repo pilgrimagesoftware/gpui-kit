@@ -2047,10 +2047,17 @@ impl<M: InputModeKind> InputBaseState<M> {
                 }
             }
         } else {
-            // Single line input or submit-on-enter: just emit the event
-            // (e.g.: in a dialog to confirm, or a chat textarea to send).
+            // Single-line input: nothing here handles Enter, so propagate it
+            // up (e.g. to a dialog's default button). A multi-line submit
+            // chord has already decided this keystroke's fate - propagating
+            // it further let a chord with its own explicit key binding
+            // (`shift-enter`) re-dispatch and type a second newline right
+            // after it submitted, on top of the newline this same keystroke
+            // was never supposed to insert in the first place (issue #565).
             self.undo_manager.break_transaction_coalescing();
-            cx.propagate();
+            if !self.is_multi_line() {
+                cx.propagate();
+            }
         }
 
         cx.emit(InputEvent::PressEnter {
