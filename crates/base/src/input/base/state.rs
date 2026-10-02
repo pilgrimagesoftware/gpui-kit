@@ -1948,11 +1948,15 @@ impl<M: InputModeKind> InputBaseState<M> {
             M::clear_inline_completion(self, cx);
         }
 
-        // In multi-line mode with `submit_on_enter` enabled, a plain `Enter`
-        // (without Shift) is treated as submit: propagate the action and emit
-        // PressEnter without inserting a newline. `Shift+Enter` still inserts
-        // a newline.
-        let insert_newline = self.is_multi_line() && (!self.submit_on_enter || action.shift);
+        // In multi-line mode, exactly one chord submits and the other
+        // inserts a newline. `submit_on_enter` names which: true means plain
+        // `Enter` submits and `Shift+Enter` inserts a newline; false means
+        // `Shift+Enter` submits and plain `Enter` inserts a newline. Whichever
+        // chord submits must never also insert a newline - a hard-coded
+        // "Shift+Enter always inserts a newline" (ignoring `submit_on_enter`)
+        // let a configured Shift+Enter-to-submit chord insert a newline at
+        // the cursor and submit in the same keystroke.
+        let insert_newline = self.is_multi_line() && (action.shift == self.submit_on_enter);
 
         if insert_newline {
             if !self.selections.is_single() {
@@ -6182,6 +6186,46 @@ mod tests {
                 assert_eq!(state.value(), "before submit");
                 state.undo(&Undo, window, cx);
                 assert_eq!(state.value(), "");
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn test_shift_enter_submits_without_inserting_newline_when_configured_as_submit_chord(
+        cx: &mut TestAppContext,
+    ) {
+        // `submit_on_enter(false)` is how a caller configures Shift+Enter as
+        // the submit chord (Knot issue #565): plain Enter must still insert
+        // a newline, and Shift+Enter must submit with no newline inserted,
+        // even with the cursor mid-text rather than at the end.
+        let input_view = InputView::build_textarea(cx, |state| state.submit_on_enter(false));
+        let mut cx = VisualTestContext::from_window(input_view.window_handle.into(), cx);
+        let input = input_view.input;
+
+        cx.update(|window, cx| {
+            input.update(cx, |state, cx| {
+                state.replace_text_in_range(None, "before after", window, cx);
+                state.set_selection(6, 6); // cursor between "before" and " after"
+
+                state.enter(
+                    &Enter {
+                        secondary: false,
+                        shift: true,
+                    },
+                    window,
+                    cx,
+                );
+                assert_eq!(state.value(), "before after");
+
+                state.enter(
+                    &Enter {
+                        secondary: false,
+                        shift: false,
+                    },
+                    window,
+                    cx,
+                );
+                assert_eq!(state.value(), "before\n after");
             });
         });
     }
