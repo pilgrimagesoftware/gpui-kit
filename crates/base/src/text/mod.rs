@@ -20,6 +20,7 @@ mod utils;
 
 use gpui::{App, ElementId, IntoElement, RenderOnce, SharedString, Window};
 pub use inline_element::*;
+pub(crate) use link_hover::begin_frame as link_hover_begin_frame;
 pub use link_hover::{HoveredLink, hovered_link};
 pub use markdown_ext::*;
 pub use node::{CodeBlock, TableData};

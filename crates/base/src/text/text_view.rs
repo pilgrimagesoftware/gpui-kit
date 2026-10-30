@@ -2542,6 +2542,50 @@ mod tests {
         assert_eq!(hovered(cx), None);
     }
 
+    /// A paragraph that can be taken off screen, as a switched view or a
+    /// virtualized row is, under a pointer that does not move.
+    struct LinkHoverRoot {
+        view: Entity<TextViewState>,
+        shown: bool,
+    }
+
+    impl Render for LinkHoverRoot {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .child(crate::TextSelectionLayer)
+                .children(self.shown.then(|| TextView::new(&self.view)))
+        }
+    }
+
+    #[gpui::test]
+    fn a_hovered_link_lapses_when_its_paragraph_stops_painting(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let (root, cx) = cx.add_window_view(|_, cx| LinkHoverRoot {
+            view: cx.new(|cx| TextViewState::markdown("[example](https://example.com)", cx)),
+            shown: true,
+        });
+        cx.simulate_mouse_move(point(px(10.), px(10.)), None, Modifiers::default());
+        cx.run_until_parked();
+        assert!(
+            cx.update(|window, cx| crate::text::hovered_link(window, cx))
+                .is_some()
+        );
+
+        // The paragraph goes; the pointer stays where it was.
+        root.update(cx, |root, cx| {
+            root.shown = false;
+            cx.notify();
+        });
+        cx.run_until_parked();
+
+        assert_eq!(
+            cx.update(|window, cx| crate::text::hovered_link(window, cx)),
+            None,
+            "a link no longer drawn is no longer hovered"
+        );
+    }
+
     #[gpui::test]
     fn right_click_does_not_open_url_without_handler(cx: &mut TestAppContext) {
         cx.update(crate::init);
