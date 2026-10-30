@@ -987,6 +987,22 @@ impl Element for Inline {
             window.set_cursor_style(CursorStyle::PointingHand, &hitbox);
         }
 
+        // Publish the link under the pointer (see `link_hover`). Here as well
+        // as on mouse move, so a link that scrolls or streams under a still
+        // pointer is reported, and one that leaves it is cleared. A change
+        // found while painting needs one more frame for readers to see it.
+        let link_owner = Arc::as_ptr(&self.state) as usize;
+        if !self.links.is_empty() {
+            let position = window.mouse_position();
+            let under = hitbox
+                .is_hovered(window)
+                .then(|| Self::link_for_position(&text_layout, &self.links, position))
+                .flatten();
+            if super::link_hover::publish(link_owner, under.as_ref(), position, window, cx) {
+                window.request_animation_frame();
+            }
+        }
+
         if let Some(selection) = &state.selection {
             let color = GlobalState::global(cx)
                 .text_view_state()
@@ -1108,7 +1124,25 @@ impl Element for Inline {
                 let links = self.links.clone();
                 let mut hovered_link = hovered_link;
                 move |event: &MouseMoveEvent, phase, window, cx| {
-                    if !phase.bubble() || !hitbox.is_hovered(window) {
+                    if !phase.bubble() {
+                        return;
+                    }
+                    // Leaving the paragraph clears what it published, which
+                    // is why this runs before the hover check below.
+                    let hovered = hitbox.is_hovered(window);
+                    let under = hovered
+                        .then(|| Self::link_for_position(&text_layout, &links, event.position))
+                        .flatten();
+                    if super::link_hover::publish(
+                        link_owner,
+                        under.as_ref(),
+                        event.position,
+                        window,
+                        cx,
+                    ) {
+                        window.refresh();
+                    }
+                    if !hovered {
                         return;
                     }
 

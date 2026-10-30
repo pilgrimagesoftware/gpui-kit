@@ -2509,6 +2509,40 @@ mod tests {
     }
 
     #[gpui::test]
+    fn hovering_a_link_publishes_it_until_the_pointer_leaves(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let (_, cx) = cx.add_window_view(|_, cx| {
+            TextViewTestRoot::new(
+                "[example](https://example.com \"Example\") then a run of plain words",
+                cx,
+            )
+        });
+        let cx: &mut VisualTestContext = cx;
+        let hovered = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| crate::text::hovered_link(window, cx))
+        };
+        let move_to = |cx: &mut VisualTestContext, x: f32, y: f32| {
+            cx.simulate_mouse_move(point(px(x), px(y)), None, Modifiers::default());
+            cx.run_until_parked();
+        };
+
+        move_to(cx, 10., 10.);
+        let link = hovered(cx).expect("the link under the pointer is published");
+        assert_eq!(link.url.as_ref(), "https://example.com");
+        assert_eq!(link.title.as_deref(), Some("Example"));
+
+        // Onto plain words in the same paragraph.
+        move_to(cx, 150., 10.);
+        assert_eq!(hovered(cx), None);
+
+        // Back onto the link, then out of the paragraph altogether.
+        move_to(cx, 10., 10.);
+        assert!(hovered(cx).is_some());
+        move_to(cx, 10., 400.);
+        assert_eq!(hovered(cx), None);
+    }
+
+    #[gpui::test]
     fn right_click_does_not_open_url_without_handler(cx: &mut TestAppContext) {
         cx.update(crate::init);
         let (_, cx) =

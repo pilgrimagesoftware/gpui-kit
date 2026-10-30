@@ -6,6 +6,7 @@ mod inline_flow;
 mod inline_object;
 #[cfg(test)]
 mod inline_virtual_tests;
+mod link_hover;
 mod markdown_ext;
 mod node;
 mod range_highlight;
@@ -19,6 +20,7 @@ mod utils;
 
 use gpui::{App, ElementId, IntoElement, RenderOnce, SharedString, Window};
 pub use inline_element::*;
+pub use link_hover::{HoveredLink, hovered_link};
 pub use markdown_ext::*;
 pub use node::{CodeBlock, TableData};
 pub use range_highlight::{RangeHighlight, RangeHighlightError, RenderedText};
