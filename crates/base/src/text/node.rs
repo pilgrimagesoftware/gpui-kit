@@ -6,10 +6,10 @@ use std::{
 
 use gpui::{
     AnyElement, App, DefiniteLength, Div, ElementId, FontStyle, FontWeight, HighlightStyle, Hsla,
-    Image, ImageFormat, ImageSource, InteractiveElement as _, IntoElement, IsZero as _, Length,
-    ObjectFit, Overflow, ParentElement, Pixels, Rems, ScrollHandle, SharedString, SharedUri,
-    StatefulInteractiveElement, StyleRefinement, Styled, StyledImage as _, WhiteSpace, Window, div,
-    img, prelude::FluentBuilder as _, px, relative, rems,
+    Image, ImageFormat, ImageSource, InteractiveElement as _, IntoElement, IsZero as _, ObjectFit,
+    Overflow, ParentElement, Pixels, Rems, ScrollHandle, SharedString, SharedUri,
+    StatefulInteractiveElement, StyleRefinement, Styled, StyledImage as _, TextStyle, WhiteSpace,
+    Window, div, img, prelude::FluentBuilder as _, px, relative, rems,
 };
 use markdown::mdast;
 
@@ -27,6 +27,7 @@ use crate::{
         inline_flow::{InlineFlow, InlineFlowItem, slice_ranges},
         range_highlight::{RangeHighlightFrame, RevealAt, RevealRequest},
         stream_fade::{StreamFadeFrame, TextLeafKey},
+        table_columns::{ColumnContent, ColumnFlex, column_flexes, unbreakable_segments},
         text_view::handle_link_click,
     },
     theme::ActiveTheme as _,
@@ -2539,25 +2540,44 @@ const CELL_PAD_PX: f32 = 16.0; // px_2 horizontal padding
 const CELL_MIN_PX: f32 = 48.0;
 const CELL_BORDER_PX: f32 = 1.0; // border_r_1 drawn by every column but the last
 
-/// The max-content width of every table column: the widest cell line,
-/// shaped with the runs the cell renders with, plus the cell's padding and
-/// border. Never capped: a cap would clip overflowing text *and* leave it
-/// outside the scrollable width, making it unreachable.
-fn measure_table_columns(
+/// The min- and max-content widths of every table column, across all rows.
+///
+/// Max-content is the widest cell line; min-content is the widest piece of a
+/// line that cannot wrap ([`unbreakable_segments`]). Both are shaped with the
+/// runs the cell renders with, and both are border-box widths: the cell's
+/// padding and border are added so the text keeps its full width. Neither is
+/// capped: a cap would clip overflowing text *and* leave it outside the
+/// scrollable width, making it unreachable. A cell holding an inline object
+/// cannot wrap, so both of its widths are its intrinsic width.
+fn measure_table_content(
     table: &Table,
     col_count: usize,
     node_cx: &NodeContext,
     window: &mut Window,
     cx: &mut App,
-) -> Vec<f32> {
+) -> Vec<ColumnContent> {
     let text_style = window.text_style();
     let font_size = text_style.font_size.to_pixels(window.rem_size());
-    let mut col_w = vec![CELL_MIN_PX; col_count];
+    let mut columns = vec![
+        ColumnContent {
+            min: CELL_MIN_PX,
+            max: CELL_MIN_PX,
+        };
+        col_count
+    ];
     for row in table.children.iter() {
         for (ix, cell) in row.children.iter().enumerate() {
-            let Some(slot) = col_w.get_mut(ix) else {
+            let Some(column) = columns.get_mut(ix) else {
                 continue;
             };
+            // Border-box widths, so the padding and border the cell draws
+            // must leave the measured text its full width.
+            let chrome = CELL_PAD_PX
+                + if ix + 1 < col_count {
+                    CELL_BORDER_PX
+                } else {
+                    0.
+                };
             if cell
                 .children
                 .children
@@ -2565,18 +2585,14 @@ fn measure_table_columns(
                 .any(|node| node.custom.is_some())
             {
                 let items = cell.children.inline_flow_items(None, &[], &[], node_cx, cx);
-                let width = super::inline_flow::intrinsic_width(&items, window, cx);
-                let border = if ix + 1 < col_count {
-                    CELL_BORDER_PX
-                } else {
-                    0.
-                };
-                *slot = slot.max(f32::from(width) + CELL_PAD_PX + border);
+                let width =
+                    f32::from(super::inline_flow::intrinsic_width(&items, window, cx)) + chrome;
+                column.min = column.min.max(width);
+                column.max = column.max.max(width);
                 continue;
             }
             let text = cell.children.text();
             let highlights = cell.children.inline_highlights(node_cx, cx);
-            let mut w = 0.0_f32;
             let mut line_start = 0;
             for line in text.split('\n') {
                 let start = line_start + (line.len() - line.trim_start().len());
@@ -2586,49 +2602,55 @@ fn measure_table_columns(
                 if line.is_empty() {
                     continue;
                 }
-                let end = start + line.len();
-                let line_highlights = highlights
-                    .iter()
-                    .filter_map(|(range, highlight)| {
-                        let clipped = range.start.max(start)..range.end.min(end);
-                        (clipped.start < clipped.end).then(|| {
-                            (
-                                clipped.start - start..clipped.end - start,
-                                highlight.clone(),
-                            )
-                        })
-                    })
-                    .collect::<Vec<_>>();
-                let mut line_w = gpui::Pixels::ZERO;
-                for (range, scale) in text_size_ranges(line.len(), &line_highlights) {
+                let line_highlights = slice_ranges(
+                    &highlights,
+                    start,
+                    start + line.len(),
+                    |range, highlight| (range, highlight.clone()),
+                );
+                let mut shaped = |range: Range<usize>| {
                     let highlights = slice_ranges(
                         &line_highlights,
                         range.start,
                         range.end,
                         |range, highlight| (range, highlight.clone()),
                     );
-                    if highlights.iter().any(|(_, h)| h.font_size_scale.is_some()) {
-                        line_w += px(crate::text::inline_flow::INLINE_CODE_PADDING * 2.);
-                    }
-                    let runs = text_runs(range.len(), &text_style, &highlights);
-                    line_w += window
-                        .text_system()
-                        .layout_line(&line[range], font_size * scale, &runs, None)
-                        .width;
+                    shaped_width(&line[range], &highlights, &text_style, font_size, window)
+                };
+                column.max = column.max.max(shaped(0..line.len()) + chrome);
+                for segment in unbreakable_segments(line) {
+                    column.min = column.min.max(shaped(segment) + chrome);
                 }
-                w = w.max(f32::from(line_w));
             }
-            // Border-box widths, so the padding and border the cell draws
-            // must leave the measured text its full width.
-            let border = if ix + 1 < col_count {
-                CELL_BORDER_PX
-            } else {
-                0.
-            };
-            *slot = slot.max(w + CELL_PAD_PX + border);
         }
     }
-    col_w
+    columns
+}
+
+/// The width of `text` shaped with `highlights` (ranges relative to `text`),
+/// including the padding an inline-code span draws around itself.
+fn shaped_width(
+    text: &str,
+    highlights: &[(Range<usize>, InlineHighlight)],
+    text_style: &TextStyle,
+    font_size: Pixels,
+    window: &mut Window,
+) -> f32 {
+    let mut width = Pixels::ZERO;
+    for (range, scale) in text_size_ranges(text.len(), highlights) {
+        let highlights = slice_ranges(highlights, range.start, range.end, |range, highlight| {
+            (range, highlight.clone())
+        });
+        if highlights.iter().any(|(_, h)| h.font_size_scale.is_some()) {
+            width += px(crate::text::inline_flow::INLINE_CODE_PADDING * 2.);
+        }
+        let runs = text_runs(range.len(), text_style, &highlights);
+        width += window
+            .text_system()
+            .layout_line(&text[range], font_size * scale, &runs, None)
+            .width;
+    }
+    f32::from(width)
 }
 
 impl Paragraph {
@@ -3026,7 +3048,7 @@ impl BlockNode {
         if matches!(node_cx.style.table().overflow.x, Some(Overflow::Scroll)) {
             Self::render_scroll_table(table, col_lens.len(), options, node_cx, window, cx)
         } else {
-            Self::render_wrap_table(table, &col_lens, options, node_cx, window, cx)
+            Self::render_wrap_table(table, col_lens.len(), options, node_cx, window, cx)
         }
     }
 
@@ -3066,7 +3088,10 @@ impl BlockNode {
         const CELL_WRAP_MAX_PX: f32 = 480.0;
         const TABLE_BORDER_PX: f32 = 2.0; // the track's border_1, left + right
 
-        let col_w = measure_table_columns(table, col_count, node_cx, window, cx);
+        let col_w: Vec<f32> = measure_table_content(table, col_count, node_cx, window, cx)
+            .iter()
+            .map(|column| column.max)
+            .collect();
         let style = &node_cx.style;
         // Nowrap cells (via the `table_cell` refinement, which cascades to
         // the cell text) must never shrink below their single-line content,
@@ -3195,18 +3220,20 @@ impl BlockNode {
             .into_any_element()
     }
 
-    /// Default table layout: a flex grid whose columns are proportioned by
-    /// content length and shrink to fit the container width (cell text wraps).
+    /// Default table layout: a flex grid sized like CSS auto table layout
+    /// (see [`super::table_columns`]). Every column gets at least its
+    /// min-content width, the room beyond that goes to the columns that want
+    /// it, and a word breaks only when the min-content widths do not fit.
     fn render_wrap_table(
         table: &Table,
-        col_lens: &[usize],
+        col_count: usize,
         options: &NodeRenderOptions,
         node_cx: &NodeContext,
         window: &mut Window,
         cx: &mut App,
     ) -> AnyElement {
-        const MAX_LENGTH: usize = 150;
-
+        let columns = measure_table_content(table, col_count, node_cx, window, cx);
+        let flexes = column_flexes(&columns, CELL_MIN_PX);
         let style = &node_cx.style;
         let row_count = table.children.len();
         let mut rows = Vec::with_capacity(row_count);
@@ -3220,19 +3247,26 @@ impl BlockNode {
                 cell_ordinal += 1;
                 let align = table.column_align(ix);
                 let is_last_col = ix == row.children.len() - 1;
-                let len = col_lens
-                    .get(ix)
-                    .copied()
-                    .unwrap_or(MAX_LENGTH)
-                    .min(MAX_LENGTH);
+                let flex = flexes.get(ix).copied().unwrap_or(ColumnFlex {
+                    basis: CELL_MIN_PX,
+                    grow: 0.,
+                    min_width: CELL_MIN_PX,
+                });
 
                 cells.push(
                     div()
+                        // The flex settings depend only on the measured
+                        // columns, never on this cell's content, so every row
+                        // resolves to the same widths and the columns line up.
+                        .flex_basis(px(flex.basis))
+                        .flex_grow(flex.grow)
+                        .flex_shrink(1.)
+                        .min_w(px(flex.min_width))
+                        // For layout tests; compiled out of release builds.
+                        .debug_selector(|| format!("markdown-table-cell-{row_ix}-{ix}"))
                         .overflow_hidden()
                         .when(align == ColumnumnAlign::Center, |this| this.text_center())
                         .when(align == ColumnumnAlign::Right, |this| this.text_right())
-                        .min_w_16()
-                        .w(Length::Definite(relative(len as f32)))
                         .px_2()
                         .py_1()
                         .when(!is_last_col, |this| {
@@ -3597,7 +3631,7 @@ mod tests {
             for expected in [400, 600] {
                 width.store(expected, std::sync::atomic::Ordering::Relaxed);
                 assert_eq!(
-                    measure_table_columns(&table, 1, &node_cx, window, cx)[0],
+                    measure_table_content(&table, 1, &node_cx, window, cx)[0].max,
                     expected as f32 + CELL_PAD_PX
                 );
             }
@@ -3637,7 +3671,10 @@ mod tests {
             cx.set_global(theme);
             let font_size = window.text_style().font_size.to_pixels(window.rem_size());
             (
-                measure_table_columns(&table, 1, &node_cx, window, cx),
+                measure_table_content(&table, 1, &node_cx, window, cx)
+                    .iter()
+                    .map(|column| column.max)
+                    .collect::<Vec<_>>(),
                 font_size,
             )
         });
@@ -3652,6 +3689,54 @@ mod tests {
             col_w[0],
             mono_w,
             CELL_PAD_PX
+        );
+    }
+
+    /// A column's min-content width is its widest word and its max-content
+    /// width its whole line, so a column of short words is never squeezed
+    /// below a word that fits (Knot #400).
+    #[test]
+    fn table_column_measures_its_widest_word_and_its_whole_line() {
+        use crate::text::inline::test_fonts::{BODY, WideMonoTextSystem};
+        use gpui::{Empty, TestApp};
+
+        let text = "Short-term Observability";
+        let mut paragraph = Paragraph::default();
+        paragraph.push(InlineNode::new(text));
+        let table = Table {
+            children: vec![TableRow {
+                children: vec![TableCell {
+                    children: paragraph,
+                    width: None,
+                }],
+            }],
+            column_aligns: vec![],
+            span: None,
+            table_data_cache: TableDataCache::default(),
+        };
+        let node_cx = NodeContext::default();
+
+        let mut app = TestApp::with_text_system(Arc::new(WideMonoTextSystem));
+        let mut window = app.open_window(|_, _| Empty);
+        let (column, font_size) = window.update(|_, window, cx| {
+            cx.set_global(crate::Theme::default());
+            let font_size = window.text_style().font_size.to_pixels(window.rem_size());
+            (
+                measure_table_content(&table, 1, &node_cx, window, cx)[0],
+                font_size,
+            )
+        });
+
+        let width = |text| f32::from(WideMonoTextSystem::width_of(text, BODY, font_size));
+        assert!(
+            (column.min - (width("Observability") + CELL_PAD_PX)).abs() < 0.01,
+            "min-content {} is the widest unbreakable piece",
+            column.min
+        );
+        assert!(
+            (column.max - (width(text) + CELL_PAD_PX)).abs() < 0.01,
+            "max-content {} is the whole line",
+            column.max
         );
     }
 

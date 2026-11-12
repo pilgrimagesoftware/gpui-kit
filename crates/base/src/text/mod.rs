@@ -15,6 +15,7 @@ mod selection_adapter;
 mod state;
 mod stream_fade;
 mod style;
+mod table_columns;
 mod text_view;
 mod utils;
 
