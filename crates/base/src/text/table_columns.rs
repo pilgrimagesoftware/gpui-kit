@@ -61,38 +61,73 @@ pub(crate) fn column_flexes(columns: &[ColumnContent], floor: f32) -> Vec<Column
 
 /// The byte ranges of `line` that cannot wrap.
 ///
-/// A line wraps at whitespace, and after a hyphen that joins two words
-/// ("short-term" may wrap as "short-" / "term"). A hyphen anywhere else, such
-/// as the dashes of a command-line flag, joins what surrounds it.
+/// These follow gpui's `LineWrapper`, which is what wraps the cell's text when
+/// it is drawn: a min-content width measured to any other rule would let the
+/// renderer break a word the measurement thought could wrap elsewhere. The
+/// wrapper breaks before a word that follows a space, and before any character
+/// that is not part of a word ([`is_word_char`]). A hyphen is part of a word, so
+/// "Short-term" is one piece; `/` and `?` are not, so a path or URL wraps at
+/// them. Spaces separate pieces and belong to none.
 pub(crate) fn unbreakable_segments(line: &str) -> Vec<Range<usize>> {
     let mut segments = Vec::new();
     let mut start: Option<usize> = None;
-    let mut chars = line.char_indices().peekable();
-    let mut previous: Option<char> = None;
-    while let Some((ix, ch)) = chars.next() {
+    let mut previous = '\0';
+    for (ix, ch) in line.char_indices() {
         if ch.is_whitespace() {
             if let Some(segment_start) = start.take() {
                 segments.push(segment_start..ix);
             }
-            previous = Some(ch);
-            continue;
+        } else {
+            let breaks_before = !is_word_char(ch) || previous == ' ';
+            if breaks_before && let Some(segment_start) = start.take() {
+                segments.push(segment_start..ix);
+            }
+            start.get_or_insert(ix);
         }
-        let segment_start = *start.get_or_insert(ix);
-        let next = chars.peek().map(|&(_, next)| next);
-        let joins_words = ch == '-'
-            && previous.is_some_and(char::is_alphanumeric)
-            && next.is_some_and(char::is_alphanumeric);
-        if joins_words {
-            let end = ix + ch.len_utf8();
-            segments.push(segment_start..end);
-            start = None;
-        }
-        previous = Some(ch);
+        previous = ch;
     }
     if let Some(segment_start) = start {
         segments.push(segment_start..line.len());
     }
     segments
+}
+
+/// Whether gpui's line wrapper keeps `c` inside a word.
+///
+/// A copy of `LineWrapper::is_word_char` (gpui-pre 0.3.7,
+/// `text_system/line_wrapper.rs`), which is `pub(crate)` there. Keep it in step
+/// when gpui is bumped: [`unbreakable_segments`] is only right while the two
+/// agree, and the tests below pin the cases that matter to a table.
+fn is_word_char(c: char) -> bool {
+    c.is_ascii_alphanumeric()
+        || matches!(c, '\u{00C0}'..='\u{00FF}')
+        || matches!(c, '\u{0100}'..='\u{017F}')
+        || matches!(c, '\u{0180}'..='\u{024F}')
+        || matches!(c, '\u{0400}'..='\u{04FF}')
+        || matches!(c, '\u{1E00}'..='\u{1EFF}')
+        || matches!(c, '\u{0300}'..='\u{036F}')
+        || matches!(c, '\u{0980}'..='\u{09FF}')
+        || matches!(
+            c,
+            '-' | '_'
+                | '.'
+                | '\''
+                | '’'
+                | '‘'
+                | '$'
+                | '%'
+                | '@'
+                | '#'
+                | '^'
+                | '~'
+                | ','
+                | '='
+                | ':'
+                | ';'
+        )
+        || matches!(c, '!' | ')' | ']' | '}' | '"' | '”' | '»' | '…')
+        || matches!(c, '⋯')
+        || matches!(c, '\u{202F}' | '\u{00A0}' | '\u{2011}')
 }
 
 #[cfg(test)]
@@ -107,28 +142,39 @@ mod tests {
     }
 
     #[test]
-    fn a_line_wraps_at_whitespace_and_after_joining_hyphens() {
+    fn a_line_wraps_where_gpui_wraps_it() {
         assert_eq!(pieces("Observability"), ["Observability"]);
         assert_eq!(pieces("Separate finding"), ["Separate", "finding"]);
-        assert_eq!(pieces("Short-term plan"), ["Short-", "term", "plan"]);
         assert_eq!(pieces("  padded\tline  "), ["padded", "line"]);
         assert_eq!(pieces(""), Vec::<&str>::new());
     }
 
+    /// The rule Knot #411's review caught: gpui never breaks at a hyphen, so
+    /// a hyphenated word is one piece, however it is spelled.
     #[test]
-    fn a_hyphen_that_does_not_join_two_words_does_not_wrap() {
+    fn a_hyphenated_word_is_one_piece() {
+        assert_eq!(pieces("Short-term plan"), ["Short-term", "plan"]);
         assert_eq!(pieces("--release"), ["--release"]);
-        assert_eq!(pieces("a - b"), ["a", "-", "b"]);
         assert_eq!(pieces("x--y"), ["x--y"]);
-        assert_eq!(pieces("trailing-"), ["trailing-"]);
+        assert_eq!(pieces("a - b"), ["a", "-", "b"]);
+    }
+
+    /// Characters gpui does not keep in a word start a new piece, so a path
+    /// or a URL wraps at its separators.
+    #[test]
+    fn a_path_or_url_wraps_before_its_separators() {
+        assert_eq!(pieces("src/text/node.rs"), ["src", "/text", "/node.rs"]);
+        assert_eq!(pieces("foo?b=2"), ["foo", "?b=2"]);
+        assert_eq!(
+            pieces("see)"),
+            ["see)"],
+            "closing punctuation stays with its word"
+        );
     }
 
     #[test]
     fn segments_are_byte_ranges_on_multibyte_text() {
-        assert_eq!(
-            pieces("café-crème au lait"),
-            ["café-", "crème", "au", "lait"]
-        );
+        assert_eq!(pieces("café-crème au lait"), ["café-crème", "au", "lait"]);
     }
 
     /// The table from #400 in Knot: a short-word column beside a long one.
