@@ -1348,28 +1348,35 @@ impl PopupMenu {
             .rounded(radius)
             .items_center()
             .selected(selected)
-            .on_hover(cx.listener(move |this, hovered, window, cx| {
-                if *hovered {
-                    // Pointing elsewhere closes the open submenu; take back
-                    // the focus the keyboard may have moved into it.
-                    if this.selected_index != Some(ix)
-                        && this.active_submenu().is_some_and(|submenu| {
-                            submenu.focus_handle(cx).contains_focused(window, cx)
-                        })
-                    {
-                        this.focus_handle.focus(window, cx);
-                    }
-                    this.selected_index = Some(ix);
-                } else if !is_submenu
-                    && this.selected_index == Some(ix)
-                    // A key press ends hover under a still pointer; keep the
-                    // highlight so the next arrow key moves on from this item.
-                    && !window.last_input_was_keyboard()
-                {
-                    // TODO: Better handle the submenu unselection when hover out
-                    this.selected_index = None;
+            // Fernrohr#118: hovering a plain item only highlights it (the item's
+            // own `hover` style) and leaves `selected_index` - what Enter
+            // confirms - to the keyboard and to clicks, so a resting pointer
+            // never changes what the keyboard activates. A submenu item still
+            // takes the selection on hover, since that is what opens it, and
+            // Enter on a submenu item does nothing.
+            .on_hover(cx.listener(move |this, hovered: &bool, window, cx| {
+                if !*hovered {
+                    return;
                 }
-
+                let submenu_open = this.selected_index != Some(ix)
+                    && this.active_submenu().is_some();
+                // Pointing elsewhere closes the open submenu; take back
+                // the focus the keyboard may have moved into it.
+                if submenu_open
+                    && this.active_submenu().is_some_and(|submenu| {
+                        submenu.focus_handle(cx).contains_focused(window, cx)
+                    })
+                {
+                    this.focus_handle.focus(window, cx);
+                }
+                if is_submenu {
+                    this.selected_index = Some(ix);
+                } else if submenu_open {
+                    // Close the submenu without choosing the hovered item.
+                    this.selected_index = None;
+                } else {
+                    return;
+                }
                 cx.notify();
             }))
             .when_some(item.a11y_label(), |this, label| this.aria_label(label))
